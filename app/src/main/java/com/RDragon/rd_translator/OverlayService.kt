@@ -7,10 +7,16 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.res.Resources
 import android.graphics.PixelFormat
+import android.hardware.display.DisplayManager
+import android.hardware.display.VirtualDisplay
+import android.media.Image
+import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.*
+import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Gravity
 import android.view.LayoutInflater
@@ -35,6 +41,8 @@ class OverlayService : Service() {
     private lateinit var prefs: SharedPreferences
 
     private var mediaProjection: MediaProjection? = null
+    private var imageReader: ImageReader? = null
+    private var virtualDisplay: VirtualDisplay? = null
     private var lastCaptureTime = 0L
     private var isProcessing = false
 
@@ -58,13 +66,10 @@ class OverlayService : Service() {
             "TRANSLATOR_CHANNEL",
             "Translation Service",
             NotificationManager.IMPORTANCE_LOW
-        ).apply {
-            description = "Background translation service"
-        }
+        ).apply { description = "Background translation service" }
 
-        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).apply {
-            createNotificationChannel(channel)
-        }
+        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
+            .createNotificationChannel(channel)
 
         val notification = NotificationCompat.Builder(this, "TRANSLATOR_CHANNEL")
             .setContentTitle("Translation Active")
@@ -78,7 +83,6 @@ class OverlayService : Service() {
     private fun setupOverlay() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         overlayView = LayoutInflater.from(this).inflate(R.layout.overlay_layout, null)
-
         textView = overlayView.findViewById(R.id.overlayTextView)
         ignoreButton = overlayView.findViewById(R.id.ignoreButton)
 
@@ -125,9 +129,28 @@ class OverlayService : Service() {
 
         mediaProjection = (getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager)
             .getMediaProjection(code, data)
-            .apply {
-                registerCallback(projectionCallback, handler)
-            }
+            .apply { registerCallback(projectionCallback, handler) }
+
+        // Create ImageReader and VirtualDisplay only once
+        if (imageReader == null) {
+            val metrics: DisplayMetrics = Resources.getSystem().displayMetrics
+            imageReader = ImageReader.newInstance(
+                metrics.widthPixels,
+                metrics.heightPixels,
+                PixelFormat.RGBA_8888,
+                2
+            )
+            virtualDisplay = mediaProjection!!.createVirtualDisplay(
+                "OCR_Display",
+                metrics.widthPixels,
+                metrics.heightPixels,
+                metrics.densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                imageReader!!.surface,
+                null,
+                null
+            )
+        }
 
         startCaptureCycle()
     }
@@ -139,25 +162,19 @@ class OverlayService : Service() {
     }
 
     private fun scheduleNextCapture() {
-        val delay = calculateDelay()
+        val delay = if (lastCaptureTime == 0L) 0L else maxOf(CAPTURE_INTERVAL - (SystemClock.elapsedRealtime() - lastCaptureTime), 0)
         handler.postDelayed(::executeCapture, delay)
     }
 
-    private fun calculateDelay(): Long {
-        return if (lastCaptureTime == 0L) 0L
-        else maxOf(CAPTURE_INTERVAL - (SystemClock.elapsedRealtime() - lastCaptureTime), 0)
-    }
-
     private fun executeCapture() {
-        // Вместо проверки isStopped, проверяем наличие mediaProjection
-        val proj = mediaProjection
-        if (proj == null) {
-            terminateService()
-            return
-        }
-        OCRProcessor.capture(proj) { words ->
-            processResults(words)
-            lastCaptureTime = SystemClock.elapsedRealtime()
+        imageReader?.acquireLatestImage()?.let { image ->
+            OCRProcessor.processImage(image) { words ->
+                processResults(words)
+                lastCaptureTime = SystemClock.elapsedRealtime()
+                scheduleNextCapture()
+            }
+        } ?: run {
+            // No image available, schedule next
             scheduleNextCapture()
         }
     }
@@ -181,9 +198,8 @@ class OverlayService : Service() {
         overlayView.visibility = View.GONE
     }
 
-    private fun getIgnoredWords(): Set<String> {
-        return prefs.getStringSet("ignored", mutableSetOf()) ?: emptySet()
-    }
+    private fun getIgnoredWords(): Set<String> =
+        prefs.getStringSet("ignored", mutableSetOf()) ?: emptySet()
 
     private fun saveIgnoredWord(word: String) {
         prefs.edit().apply {
@@ -193,12 +209,14 @@ class OverlayService : Service() {
     }
 
     private fun cleanupProjection() {
-        mediaProjection?.let {
-            it.unregisterCallback(projectionCallback)
-            it.stop()
-            mediaProjection = null
-        }
-        OCRProcessor.cleanup()
+        mediaProjection?.unregisterCallback(projectionCallback)
+        mediaProjection?.stop()
+        mediaProjection = null
+
+        virtualDisplay?.release()
+        virtualDisplay = null
+        imageReader?.close()
+        imageReader = null
     }
 
     private fun terminateService() {
