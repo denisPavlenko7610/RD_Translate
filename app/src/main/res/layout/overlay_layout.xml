@@ -1,0 +1,29 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:orientation="horizontal"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:padding="16dp"
+    android:background="#7E000000"
+    android:clipToPadding="false">
+
+    <Button
+        android:id="@+id/ignoreButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textSize="6sp"
+        android:textColor="#FFFFFF"
+        android:background="#A3373737"
+        android:text="Ignore"
+        tools:ignore="SmallSp" />
+
+    <TextView
+        android:id="@+id/overlayTextView"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="#FFFFFF"
+        android:textSize="22sp"
+        android:maxLines="4"
+        android:ellipsize="end"
+        android:text="..." />
+</LinearLayout>
